@@ -16,7 +16,7 @@
 //! use codespan_reporting::diagnostic::{Diagnostic, Label};
 //! use codespan_reporting::files::SimpleFiles;
 //! use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-//! use locspan::Meta;
+//! use turtle_syntax::meta::Meta;
 //! use std::fs::File;
 //! use std::io::Read;
 //! use turtle_syntax::{
@@ -71,6 +71,7 @@ mod ast;
 pub mod build;
 pub mod lexing;
 pub mod parsing;
+pub mod meta;
 
 pub use ast::*;
 pub use build::Build;

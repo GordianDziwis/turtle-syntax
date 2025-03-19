@@ -1,9 +1,10 @@
 use crate::{
 	lexing::{self, Delimiter, Keyword, Punct, Token, Tokens},
+	meta::Meta,
 	Collection, Lexer, RdfLiteral,
 };
 use decoded_char::DecodedChar;
-use locspan::{Meta, Span};
+use locspan::Span;
 
 /// Unexpected char or end of file.
 #[derive(Debug, thiserror::Error)]
@@ -707,7 +708,7 @@ impl<M> Parse<M> for crate::Object<M> {
 	}
 }
 
-const XSD_STRING: iref::Iri<'static> = static_iref::iri!("http://www.w3.org/2001/XMLSchema#string");
+const XSD_STRING: &iref::Iri = static_iref::iri!("http://www.w3.org/2001/XMLSchema#string");
 
 #[allow(clippy::type_complexity)]
 fn parse_rdf_literal<M, L, F>(
@@ -730,7 +731,7 @@ where
 				RdfLiteral::new(
 					Meta(string, parser.build_metadata(string_span)),
 					Meta(
-						rdf_types::literal::Type::LangString(tag),
+						rdf_types::LiteralType::LangString(tag),
 						parser.build_metadata(tag_span),
 					),
 				),
@@ -739,7 +740,7 @@ where
 		}
 		Meta(Some(Token::Punct(Punct::Carets)), _) => {
 			parser.next()?;
-			let iri = crate::Iri::parse_with(parser)?.map(rdf_types::literal::Type::Any);
+			let iri = crate::Iri::parse_with(parser)?.map(rdf_types::LiteralType::Any);
 			let span = string_span.union(parser.last_span());
 			Ok(Meta(
 				RdfLiteral::new(Meta(string, parser.build_metadata(string_span)), iri),
@@ -748,7 +749,7 @@ where
 		}
 		_ => {
 			let ty = Meta(
-				rdf_types::literal::Type::Any(crate::Iri::IriRef(XSD_STRING.to_owned().into())),
+				rdf_types::LiteralType::Any(crate::Iri::IriRef(XSD_STRING.to_owned().into())),
 				parser.build_metadata(string_span),
 			);
 			Ok(Meta(

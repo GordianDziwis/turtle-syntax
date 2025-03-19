@@ -1,8 +1,9 @@
+use crate::meta::Meta;
 use crate::{BlankIdBuf, DecimalBuf, DoubleBuf, IntegerBuf, NumericLiteral};
 use decoded_char::DecodedChar;
 use iref::IriRefBuf;
-use langtag::LanguageTagBuf;
-use locspan::{Meta, Span};
+use langtag::LangTagBuf;
+use locspan::Span;
 use std::fmt;
 use std::iter::Peekable;
 use std::str::FromStr;
@@ -49,8 +50,8 @@ pub enum Error<E = std::convert::Infallible> {
 	#[error("invalid character code point {0:x}")]
 	InvalidCodepoint(u32),
 
-	#[error("invalid IRI reference <{0}>: {1}")]
-	InvalidIriRef(iref::Error, String),
+	#[error("invalid IRI reference <{0}>")]
+	InvalidIriRef(iref::iri::InvalidIriRef<String>),
 
 	#[error(transparent)]
 	Unexpected(Unexpected),
@@ -65,7 +66,7 @@ pub enum Token {
 	Keyword(Keyword),
 	Begin(Delimiter),
 	End(Delimiter),
-	LangTag(LanguageTagBuf),
+	LangTag(LangTagBuf),
 	IriRef(IriRefBuf),
 	StringLiteral(String),
 	BlankNodeLabel(BlankIdBuf),
@@ -98,7 +99,7 @@ impl fmt::Display for Token {
 /// Wrapper to display string literals.
 pub struct DisplayStringLiteral<'a>(pub &'a str);
 
-impl<'a> fmt::Display for DisplayStringLiteral<'a> {
+impl fmt::Display for DisplayStringLiteral<'_> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		for c in self.0.chars() {
 			match c {
@@ -222,7 +223,7 @@ impl Position {
 	}
 
 	fn end(&self) -> Span {
-		self.span.end().into()
+		self.span.end.into()
 	}
 
 	fn last(&self) -> Span {
@@ -254,7 +255,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 
 enum LanguageTagOrKeyword {
 	Keyword(Keyword),
-	LanguageTag(LanguageTagBuf),
+	LanguageTag(LangTagBuf),
 }
 
 enum NameOrKeyword {
@@ -395,7 +396,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 				LanguageTagOrKeyword::Keyword(Keyword::Base),
 				self.pos.current(),
 			)),
-			_ => match LanguageTagBuf::new(tag.into_bytes()) {
+			_ => match LangTagBuf::new(tag) {
 				Ok(tag) => Ok(Meta(
 					LanguageTagOrKeyword::LanguageTag(tag),
 					self.pos.current(),
@@ -447,9 +448,10 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 			}
 		}
 
-		match IriRefBuf::from_string(iriref) {
+		match IriRefBuf::new(iriref) {
 			Ok(iriref) => Ok(Meta(iriref, self.pos.current())),
-			Err((e, string)) => Err(Meta(Error::InvalidIriRef(e, string), self.pos.current())),
+			// NOTE Dropped string
+			Err(e) => Err(Meta(Error::InvalidIriRef(e), self.pos.current())),
 		}
 	}
 
@@ -469,7 +471,8 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 			}
 		}
 
-		span.set_end(self.pos.current().end());
+		// NOTE set_end method had a check
+		span.end = self.pos.current().end;
 		match char::try_from(codepoint) {
 			Ok(c) => Ok(c),
 			Err(_) => Err(Meta(Error::InvalidCodepoint(codepoint), span)),
@@ -749,7 +752,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 				let c = match self.expect_char()? {
 					'%' => {
 						// percent encoded.
-						self.next_hex_char(self.pos.current().end().into(), 2)?
+						self.next_hex_char(self.pos.current().end.into(), 2)?
 					}
 					'\\' => {
 						// escape sequence.
@@ -769,7 +772,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 							let c = match self.expect_char()? {
 								'%' => {
 									// percent encoded.
-									self.next_hex_char(self.pos.current().end().into(), 2)?
+									self.next_hex_char(self.pos.current().end.into(), 2)?
 								}
 								'\\' => {
 									// escape sequence.
@@ -781,7 +784,8 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 							suffix.push(c);
 						}
 						_ => {
-							suffix_span.set_end(self.pos.current().end());
+							// NOTE set_end had a check
+							suffix_span.end = self.pos.current().end;
 							break Ok(Meta(
 								NameOrKeyword::CompactIri(namespace, (suffix, suffix_span)),
 								self.pos.current(),
@@ -856,13 +860,13 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	#[allow(clippy::type_complexity)]
 	pub fn peek(&mut self) -> Result<Meta<Option<&Token>, Span>, Meta<Error<E>, Span>> {
 		if self.lookahead.is_none() {
-			if let locspan::Meta(Some(token), loc) = self.consume()? {
+			if let Meta(Some(token), loc) = self.consume()? {
 				self.lookahead = Some(Meta::new(token, loc));
 			}
 		}
 
 		match &self.lookahead {
-			Some(locspan::Meta(token, loc)) => Ok(Meta::new(Some(token), *loc)),
+			Some(Meta(token, loc)) => Ok(Meta::new(Some(token), *loc)),
 			None => Ok(Meta::new(None, self.pos.end())),
 		}
 	}
@@ -870,7 +874,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	#[allow(clippy::type_complexity, clippy::should_implement_trait)]
 	pub fn next(&mut self) -> Result<Meta<Option<Token>, Span>, Meta<Error<E>, Span>> {
 		match self.lookahead.take() {
-			Some(locspan::Meta(token, loc)) => Ok(Meta::new(Some(token), loc)),
+			Some(Meta(token, loc)) => Ok(Meta::new(Some(token), loc)),
 			None => self.consume(),
 		}
 	}

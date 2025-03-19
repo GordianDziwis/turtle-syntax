@@ -1,9 +1,9 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-use locspan::Meta;
 use std::fs::File;
 use std::io::Read;
+use turtle_syntax::meta::Meta;
 use turtle_syntax::{parsing::Parse, Document};
 
 fn main() -> std::io::Result<()> {

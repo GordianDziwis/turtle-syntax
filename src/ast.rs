@@ -2,11 +2,11 @@
 use std::fmt;
 
 use iref::IriRefBuf;
-use locspan::Meta;
+use rdf_types::LiteralType;
 pub use rdf_types::{BlankId, BlankIdBuf};
 pub use xsd_types::lexical::{DecimalBuf, DoubleBuf, IntegerBuf};
 
-pub type RdfLiteral<M> = rdf_types::meta::Literal<M, rdf_types::literal::Type<Iri<M>>>;
+use crate::meta::Meta;
 
 /// An IRI or compact IRI.
 #[derive(Clone, Debug)]
@@ -145,6 +145,30 @@ pub enum Literal<M> {
 
 	/// Boolean literal.
 	Boolean(bool),
+}
+
+#[derive(Clone, Debug)]
+pub struct RdfLiteral<M, T = Iri<M>> {
+	/// Literal value.
+	pub value: Meta<String, M>,
+
+	/// Literal type.
+	pub type_: Meta<LiteralType<T>, M>,
+}
+
+impl<M, T> RdfLiteral<M, T> {
+	pub fn new(value: Meta<String, M>, type_: Meta<LiteralType<T>, M>) -> Self {
+		Self { value, type_ }
+	}
+}
+
+impl<M, T> From<RdfLiteral<M, T>> for rdf_types::Literal<T> {
+	fn from(value: RdfLiteral<M, T>) -> Self {
+		rdf_types::Literal {
+			value: value.value.into_value(),
+			type_: value.type_.into_value(),
+		}
+	}
 }
 
 /// Numeric literal value.

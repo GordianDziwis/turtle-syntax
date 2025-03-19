@@ -1,22 +1,24 @@
 use iref::{Iri, IriBuf, IriRef, IriRefBuf};
-use langtag::LanguageTagBuf;
-use locspan::Meta;
-use rdf_types::{
-	literal::Type, BlankIdVocabulary, BlankIdVocabularyMut, Generator, IriVocabulary,
-	IriVocabularyMut, LanguageTagVocabulary, LanguageTagVocabularyMut, Namespace, Triple,
+use langtag::LangTagBuf;
+use rdf_types::vocabulary::{
+	BlankIdVocabulary, BlankIdVocabularyMut, IriVocabulary, IriVocabularyMut,
 };
+use rdf_types::{Generator, LexicalTriple, Term, Triple};
 use static_iref::iri;
 use std::collections::HashMap;
 
-const RDF_TYPE: Iri<'static> = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
-const RDF_LIST: Iri<'static> = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#List");
-const RDF_NIL: Iri<'static> = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#nil");
-const RDF_FIRST: Iri<'static> = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#first");
-const RDF_REST: Iri<'static> = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#rest");
-const XSD_BOOLEAN: Iri<'static> = iri!("http://www.w3.org/2001/XMLSchema#boolean");
-const XSD_INTEGER: Iri<'static> = iri!("http://www.w3.org/2001/XMLSchema#integer");
-const XSD_DECIMAL: Iri<'static> = iri!("http://www.w3.org/2001/XMLSchema#decimal");
-const XSD_DOUBLE: Iri<'static> = iri!("http://www.w3.org/2001/XMLSchema#double");
+use crate::meta::Meta;
+use crate::RdfLiteral;
+
+const RDF_TYPE: &Iri = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
+const RDF_LIST: &Iri = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#List");
+const RDF_NIL: &Iri = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#nil");
+const RDF_FIRST: &Iri = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#first");
+const RDF_REST: &Iri = iri!("http://www.w3.org/1999/02/22-rdf-syntax-ns#rest");
+const XSD_BOOLEAN: &Iri = iri!("http://www.w3.org/2001/XMLSchema#boolean");
+const XSD_INTEGER: &Iri = iri!("http://www.w3.org/2001/XMLSchema#integer");
+const XSD_DECIMAL: &Iri = iri!("http://www.w3.org/2001/XMLSchema#decimal");
+const XSD_DOUBLE: &Iri = iri!("http://www.w3.org/2001/XMLSchema#double");
 
 /// Triple with metadata.
 pub type MetaTriple<M, V = ()> = Meta<
@@ -24,19 +26,27 @@ pub type MetaTriple<M, V = ()> = Meta<
 		Meta<rdf_types::Subject<<V as IriVocabulary>::Iri, <V as BlankIdVocabulary>::BlankId>, M>,
 		Meta<<V as IriVocabulary>::Iri, M>,
 		Meta<
-			rdf_types::meta::Object<
-				M,
+			rdf_types::Object<
 				rdf_types::Id<<V as IriVocabulary>::Iri, <V as BlankIdVocabulary>::BlankId>,
-				rdf_types::literal::Type<
-					<V as IriVocabulary>::Iri,
-					<V as LanguageTagVocabulary>::LanguageTag,
-				>,
+				RdfLiteral<M, <V as IriVocabulary>::Iri>,
 			>,
 			M,
 		>,
 	>,
 	M,
 >;
+
+impl<M> MetaTriple<M> {
+	pub fn strip(self) -> LexicalTriple {
+		self.into_value()
+			.map_subject(|s| s.into_value())
+			.map_predicate(|s| s.into_value())
+			.map_object(|s| match s.into_value() {
+				Term::Id(id) => Term::Id(id),
+				Term::Literal(literal) => Term::Literal(literal.into()),
+			})
+	}
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -72,9 +82,7 @@ impl<M: Clone> crate::Document<M> {
 		Ok(triples)
 	}
 
-	pub fn build_triples_with<
-		V: RdfVocabulary + IriVocabularyMut + BlankIdVocabularyMut + LanguageTagVocabularyMut,
-	>(
+	pub fn build_triples_with<V: RdfVocabulary + IriVocabularyMut + BlankIdVocabularyMut>(
 		&self,
 		base_iri: Option<V::Iri>,
 		vocabulary: &mut V,
@@ -110,7 +118,7 @@ impl<'v, 'g, M, V: IriVocabulary, G> Context<'v, 'g, M, V, G> {
 
 	pub fn resolve_iri_ref(
 		&mut self,
-		Meta(iri_ref, meta): Meta<IriRef, &M>,
+		Meta(iri_ref, meta): Meta<&IriRef, &M>,
 	) -> Result<V::Iri, MetaError<M>>
 	where
 		M: Clone,
@@ -121,9 +129,9 @@ impl<'v, 'g, M, V: IriVocabulary, G> Context<'v, 'g, M, V, G> {
 				let iri = iri_ref.resolved(self.vocabulary.iri(current).unwrap());
 				Ok(self.vocabulary.insert(iri.as_iri()))
 			}
-			None => match iri_ref.into_iri() {
-				Ok(iri) => Ok(self.vocabulary.insert(iri)),
-				Err(_) => Err(Meta(
+			None => match iri_ref.as_iri() {
+				Some(iri) => Ok(self.vocabulary.insert(iri)),
+				None => Err(Meta(
 					Box::new(Error::NoBaseIri(iri_ref.to_owned())),
 					meta.clone(),
 				)),
@@ -170,22 +178,9 @@ impl<'v, 'g, M, V: IriVocabulary, G> Context<'v, 'g, M, V, G> {
 	}
 }
 
-pub trait RdfVocabulary:
-	IriVocabulary
-	+ BlankIdVocabulary
-	+ LanguageTagVocabulary
-	+ Namespace<Id = rdf_types::Id<Self::Iri, Self::BlankId>>
-{
-}
+pub trait RdfVocabulary: IriVocabulary + BlankIdVocabulary {}
 
-impl<
-		V: IriVocabulary
-			+ BlankIdVocabulary
-			+ LanguageTagVocabulary
-			+ Namespace<Id = rdf_types::Id<V::Iri, V::BlankId>>,
-	> RdfVocabulary for V
-{
-}
+impl<V> RdfVocabulary for V where V: IriVocabulary + BlankIdVocabulary {}
 
 pub trait Build<M, V: RdfVocabulary, G> {
 	fn build(
@@ -195,11 +190,8 @@ pub trait Build<M, V: RdfVocabulary, G> {
 	) -> Result<(), MetaError<M>>;
 }
 
-impl<
-		M: Clone,
-		V: RdfVocabulary + IriVocabularyMut + BlankIdVocabularyMut + LanguageTagVocabularyMut,
-		G: Generator<V>,
-	> Build<M, V, G> for crate::Document<M>
+impl<M: Clone, V: RdfVocabulary + IriVocabularyMut + BlankIdVocabularyMut, G: Generator<V>>
+	Build<M, V, G> for crate::Document<M>
 where
 	V::Iri: Clone,
 	V::BlankId: Clone,
@@ -234,10 +226,7 @@ where
 }
 
 impl<M: Clone> crate::Triples<M> {
-	fn build<
-		V: RdfVocabulary + IriVocabularyMut + BlankIdVocabularyMut + LanguageTagVocabularyMut,
-		G: Generator<V>,
-	>(
+	fn build<V: RdfVocabulary + IriVocabularyMut + BlankIdVocabularyMut, G: Generator<V>>(
 		&self,
 		context: &mut Context<M, V, G>,
 		meta: &M,
@@ -258,10 +247,7 @@ impl<M: Clone> crate::Triples<M> {
 }
 
 impl<M: Clone> crate::PredicateObjects<M> {
-	fn build<
-		V: RdfVocabulary + IriVocabularyMut + BlankIdVocabularyMut + LanguageTagVocabularyMut,
-		G: Generator<V>,
-	>(
+	fn build<V: RdfVocabulary + IriVocabularyMut + BlankIdVocabularyMut, G: Generator<V>>(
 		&self,
 		context: &mut Context<M, V, G>,
 		meta: &M,
@@ -348,7 +334,7 @@ impl<M: Clone, V: RdfVocabulary + IriVocabularyMut + BlankIdVocabulary, G>
 
 impl<M: Clone, V: RdfVocabulary, G: Generator<V>> BuildMetaFragment<M, V, G> for crate::BlankNode<M>
 where
-	V: IriVocabularyMut + BlankIdVocabularyMut + LanguageTagVocabularyMut,
+	V: IriVocabularyMut + BlankIdVocabularyMut,
 	V::Iri: Clone,
 	V::BlankId: Clone,
 {
@@ -379,7 +365,7 @@ where
 
 impl<M: Clone, V: RdfVocabulary, G: Generator<V>> BuildMetaFragment<M, V, G> for crate::Subject<M>
 where
-	V: IriVocabularyMut + BlankIdVocabularyMut + LanguageTagVocabularyMut,
+	V: IriVocabularyMut + BlankIdVocabularyMut,
 	V::Iri: Clone,
 	V::BlankId: Clone,
 {
@@ -402,7 +388,7 @@ where
 impl<M: Clone, V: RdfVocabulary, G: Generator<V>> BuildMetaFragment<M, V, G>
 	for crate::Collection<M>
 where
-	V: IriVocabularyMut + BlankIdVocabularyMut + LanguageTagVocabularyMut,
+	V: IriVocabularyMut + BlankIdVocabularyMut,
 	V::Iri: Clone,
 	V::BlankId: Clone,
 {
@@ -482,12 +468,11 @@ impl<M: Clone, V: RdfVocabulary + IriVocabularyMut, G> BuildMetaFragment<M, V, G
 
 impl<M: Clone, V: RdfVocabulary, G: Generator<V>> BuildMetaFragment<M, V, G> for crate::Object<M>
 where
-	V: IriVocabularyMut + BlankIdVocabularyMut + LanguageTagVocabularyMut,
+	V: IriVocabularyMut + BlankIdVocabularyMut,
 	V::Iri: Clone,
 	V::BlankId: Clone,
 {
-	type Target =
-		rdf_types::meta::Object<M, rdf_types::Id<V::Iri, V::BlankId>, Type<V::Iri, V::LanguageTag>>;
+	type Target = rdf_types::Object<rdf_types::Id<V::Iri, V::BlankId>, RdfLiteral<M, V::Iri>>;
 
 	fn build(
 		&self,
@@ -512,9 +497,9 @@ where
 
 impl<M: Clone, V: RdfVocabulary, G> BuildMetaFragment<M, V, G> for crate::Literal<M>
 where
-	V: IriVocabularyMut + BlankIdVocabulary + LanguageTagVocabularyMut,
+	V: IriVocabularyMut + BlankIdVocabulary,
 {
-	type Target = rdf_types::meta::Literal<M, Type<V::Iri, V::LanguageTag>>;
+	type Target = RdfLiteral<M, V::Iri>;
 
 	fn build(
 		&self,
@@ -532,9 +517,9 @@ where
 
 impl<M: Clone, V: RdfVocabulary, G> BuildMetaFragment<M, V, G> for bool
 where
-	V: IriVocabularyMut + BlankIdVocabulary + LanguageTagVocabulary,
+	V: IriVocabularyMut + BlankIdVocabulary,
 {
-	type Target = rdf_types::meta::Literal<M, Type<V::Iri, V::LanguageTag>>;
+	type Target = RdfLiteral<M, V::Iri>;
 
 	fn build(
 		&self,
@@ -544,10 +529,10 @@ where
 	) -> Result<Self::Target, MetaError<M>> {
 		let s = if *self { "true" } else { "false" };
 
-		Ok(rdf_types::meta::Literal::new(
+		Ok(RdfLiteral::new(
 			Meta(s.to_owned(), meta.clone()),
 			Meta(
-				rdf_types::literal::Type::Any(context.vocabulary.insert(XSD_BOOLEAN)),
+				rdf_types::LiteralType::Any(context.vocabulary.insert(XSD_BOOLEAN)),
 				meta.clone(),
 			),
 		))
@@ -556,9 +541,9 @@ where
 
 impl<M: Clone, V: RdfVocabulary, G> BuildMetaFragment<M, V, G> for crate::NumericLiteral
 where
-	V: IriVocabularyMut + BlankIdVocabulary + LanguageTagVocabulary,
+	V: IriVocabularyMut + BlankIdVocabulary,
 {
-	type Target = rdf_types::meta::Literal<M, Type<V::Iri, V::LanguageTag>>;
+	type Target = RdfLiteral<M, V::Iri>;
 
 	fn build(
 		&self,
@@ -572,18 +557,21 @@ where
 			Self::Double(d) => (d.as_str(), XSD_DOUBLE),
 		};
 
-		Ok(rdf_types::meta::Literal::new(
+		Ok(RdfLiteral::new(
 			Meta(s.to_owned(), meta.clone()),
-			Meta(Type::Any(context.vocabulary.insert(ty)), meta.clone()),
+			Meta(
+				rdf_types::LiteralType::Any(context.vocabulary.insert(ty)),
+				meta.clone(),
+			),
 		))
 	}
 }
 
 impl<M: Clone, V: RdfVocabulary, G> BuildMetaFragment<M, V, G> for crate::RdfLiteral<M>
 where
-	V: IriVocabularyMut + BlankIdVocabulary + LanguageTagVocabularyMut,
+	V: IriVocabularyMut + BlankIdVocabulary,
 {
-	type Target = rdf_types::meta::Literal<M, Type<V::Iri, V::LanguageTag>>;
+	type Target = RdfLiteral<M, V::Iri>;
 
 	fn build(
 		&self,
@@ -591,32 +579,31 @@ where
 		_meta: &M,
 		triples: &mut Vec<MetaTriple<M, V>>,
 	) -> Result<Self::Target, MetaError<M>> {
-		let type_ = match self.type_() {
-			Meta(rdf_types::literal::Type::Any(t), meta) => Meta(
-				rdf_types::literal::Type::Any(t.build(context, meta, triples)?),
+		let type_ = match &self.type_ {
+			Meta(rdf_types::LiteralType::Any(t), meta) => Meta(
+				rdf_types::LiteralType::Any(t.build(context, meta, triples)?),
 				meta.clone(),
 			),
-			Meta(rdf_types::literal::Type::LangString(tag), meta) => Meta(
-				rdf_types::literal::Type::LangString(tag.build(context, meta, triples)?),
+			Meta(rdf_types::LiteralType::LangString(tag), meta) => Meta(
+				rdf_types::LiteralType::LangString(tag.build(context, meta, triples)?),
 				meta.clone(),
 			),
 		};
 
-		Ok(rdf_types::meta::Literal::new(self.value().clone(), type_))
+		Ok(RdfLiteral::new(self.value.clone(), type_))
 	}
 }
 
-impl<M: Clone, V: RdfVocabulary + LanguageTagVocabularyMut, G> BuildMetaFragment<M, V, G>
-	for LanguageTagBuf
-{
-	type Target = V::LanguageTag;
+impl<M: Clone, V: RdfVocabulary, G> BuildMetaFragment<M, V, G> for LangTagBuf {
+	type Target = LangTagBuf;
 
 	fn build(
 		&self,
-		context: &mut Context<M, V, G>,
+		_context: &mut Context<M, V, G>,
 		_meta: &M,
 		_triples: &mut Vec<MetaTriple<M, V>>,
 	) -> Result<Self::Target, MetaError<M>> {
-		Ok(context.vocabulary.insert_language_tag(self.as_ref()))
+		// NOTE Clone needed?
+		Ok(self.clone())
 	}
 }
