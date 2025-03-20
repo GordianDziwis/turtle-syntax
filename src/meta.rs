@@ -318,24 +318,6 @@ impl<T: 'static + std::error::Error, M: fmt::Debug> std::error::Error for Meta<T
 	}
 }
 
-/// Provides the `at` function to locate any value.
-///
-/// This trait is implemented for all types.
-pub trait At: Sized {
-	/// Wraps `self` inside a `Meta<Self, M>` using the given `metadata`.
-	///
-	/// Equivalent to `Meta(self, metadata)`.
-	/// Usually called with a [`Location`](crate::Location) to locate a value in a source file.
-	fn at<M>(self, metadata: M) -> Meta<Self, M>;
-}
-
-impl<T> At for T {
-	#[inline(always)]
-	fn at<M>(self, metadata: M) -> Meta<Self, M> {
-		Meta(self, metadata)
-	}
-}
-
 /// Provides a function to map the metadata inside a recursive data structure.
 pub trait MapMetadataRecursively<M, N> {
 	type Output;
@@ -379,95 +361,5 @@ where
 		f: F,
 	) -> Result<Self::Output, E> {
 		self.try_map_metadata_recursively(f)
-	}
-}
-
-/// Provides a transposition function from `Option<Meta<T, M>>` to `Meta<Option<T>, M>`.
-pub trait MetaTranspose {
-	/// Located value type.
-	type Value;
-
-	/// Metadata type.
-	type Metadata;
-
-	/// Transposes a `Option<Meta<Self::Value, Self::Metadata>>` into a `Meta<Option<Self::Value>, Self::Metadata>`.
-	fn meta_transpose(
-		self,
-		none_metadata: impl FnOnce() -> Self::Metadata,
-	) -> Meta<Option<Self::Value>, Self::Metadata>;
-}
-
-impl<T, M> MetaTranspose for Option<Meta<T, M>> {
-	type Value = T;
-	type Metadata = M;
-
-	#[inline(always)]
-	fn meta_transpose(self, none_metadata: impl FnOnce() -> M) -> Meta<Option<T>, M> {
-		match self {
-			Some(Meta(t, m)) => Meta(Some(t), m),
-			None => Meta(None, none_metadata()),
-		}
-	}
-}
-
-/// Locates the error of a `Result<T, E>`.
-pub trait ErrAt {
-	/// Success type.
-	type Value;
-
-	/// Error type.
-	type Error;
-
-	/// Changes a `Result<Self::Value, Self::Error>` into a `Result<Self::Value, Meta<Self::Error, M>>` by wrapping
-	/// any eventual error using the result of the `metadata` function.
-	fn err_at<M>(self, metadata: impl FnOnce() -> M) -> Result<Self::Value, Meta<Self::Error, M>>;
-}
-
-impl<T, E> ErrAt for Result<T, E> {
-	type Value = T;
-	type Error = E;
-
-	#[inline(always)]
-	fn err_at<M>(self, metadata: impl FnOnce() -> M) -> Result<Self::Value, Meta<Self::Error, M>> {
-		match self {
-			Ok(t) => Ok(t),
-			Err(e) => Err(Meta(e, metadata())),
-		}
-	}
-}
-
-/// Maps the located error of a `Result<T, Meta<E, F>>`.
-pub trait MapLocErr {
-	/// Success type.
-	type Value;
-
-	/// Error type.
-	type Error;
-
-	/// Metadata type.
-	type Metadata;
-
-	/// Changes a `Result<Self::Value, Meta<Self::Error, Self::Metadata>>` into a `Result<Self::Value, Meta<G, Self::Metadata>>`
-	/// by mapping the error value using `f`.
-	fn map_loc_err<G>(
-		self,
-		f: impl FnOnce(Self::Error) -> G,
-	) -> Result<Self::Value, Meta<G, Self::Metadata>>;
-}
-
-impl<T, E, M> MapLocErr for Result<T, Meta<E, M>> {
-	type Value = T;
-	type Error = E;
-	type Metadata = M;
-
-	#[inline(always)]
-	fn map_loc_err<G>(
-		self,
-		f: impl FnOnce(Self::Error) -> G,
-	) -> Result<Self::Value, Meta<G, Self::Metadata>> {
-		match self {
-			Ok(t) => Ok(t),
-			Err(Meta(e, m)) => Err(Meta(f(e), m)),
-		}
 	}
 }

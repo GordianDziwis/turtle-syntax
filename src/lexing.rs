@@ -461,7 +461,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 		for _ in 0..len {
 			let c = self.expect_char()?;
 			match c.to_digit(16) {
-				Some(d) => codepoint = codepoint << 4 | d,
+				Some(d) => codepoint = (codepoint << 4) | d,
 				None => {
 					return Err(Meta(
 						Error::Unexpected(Unexpected::Char(c)),
