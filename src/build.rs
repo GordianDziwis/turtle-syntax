@@ -1,4 +1,6 @@
+use crate::lexing::MetaTuple;
 use crate::meta::Meta;
+use crate::Statement;
 use iref::{Iri, IriBuf, IriRef, IriRefBuf};
 use langtag::LangTagBuf;
 use rdf_types::vocabulary::{
@@ -37,15 +39,25 @@ pub enum Error {
 pub type MetaError<M> = Meta<Box<Error>, M>;
 
 /// Triple with metadata.
-pub type MetaTriple<M, V = ()> = Meta<
+// pub type MetaTriple<M, V = ()> = Meta<
+// 	Triple<
+// 		Meta<RdfId<V>, M>,
+// 		Meta<<V as IriVocabulary>::Iri, M>,
+// 		Meta<Object<RdfId<V>, crate::RdfLiteral<M, <V as IriVocabulary>::Iri>>, M>,
+// 	>,
+// 	M,
+// >;
+pub type MetaTriple<M, V = ()> = (
 	Triple<
-		Meta<RdfId<V>, M>,
-		Meta<<V as IriVocabulary>::Iri, M>,
-		Meta<Object<RdfId<V>, crate::RdfLiteral<M, <V as IriVocabulary>::Iri>>, M>,
+		(RdfId<V>, M),
+		(<V as IriVocabulary>::Iri, M),
+		(
+			Object<RdfId<V>, crate::RdfLiteral<M, <V as IriVocabulary>::Iri>>,
+			M,
+		),
 	>,
 	M,
->;
-
+);
 pub type RdfTriple<V> = Triple<RdfId<V>, <V as IriVocabulary>::Iri, RdfTerm<V>>;
 
 pub type RdfId<V> = Id<<V as IriVocabulary>::Iri, <V as BlankIdVocabulary>::BlankId>;
@@ -56,10 +68,9 @@ pub fn strip<M, V>(t: MetaTriple<M, V>) -> RdfTriple<V>
 where
 	V: IriVocabularyMut + BlankIdVocabularyMut,
 {
-	t.into_value()
-		.map_subject(|s| s.into_value())
-		.map_predicate(|s| s.into_value())
-		.map_object(|s| match s.into_value() {
+	t.0.map_subject(|s| s.0)
+		.map_predicate(|s| s.0)
+		.map_object(|s| match s.0 {
 			Term::Id(id) => Term::Id(id),
 			Term::Literal(literal) => Term::Literal(literal.into()),
 		})
@@ -113,7 +124,7 @@ impl<'v, 'g, M, V: IriVocabulary, G> Context<'v, 'g, M, V, G> {
 
 	pub fn resolve_iri_ref(
 		&mut self,
-		Meta(iri_ref, meta): Meta<&IriRef, &M>,
+		(iri_ref, meta): (&IriRef, &M),
 	) -> Result<V::Iri, MetaError<M>>
 	where
 		M: Clone,
@@ -136,8 +147,8 @@ impl<'v, 'g, M, V: IriVocabulary, G> Context<'v, 'g, M, V, G> {
 
 	pub fn resolve_compact_iri(
 		&mut self,
-		prefix: Meta<&str, &M>,
-		suffix: Meta<&str, &M>,
+		prefix: (&str, &M),
+		suffix: (&str, &M),
 		meta: &M,
 	) -> Result<V::Iri, MetaError<M>>
 	where
@@ -198,7 +209,7 @@ where
 	) -> Result<(), MetaError<M>> {
 		for statement in &self.statements {
 			match statement {
-				Meta(crate::Statement::Directive(directive), meta) => match directive {
+				(Statement::Directive(directive), meta) => match directive {
 					crate::Directive::Base(iri) | crate::Directive::SparqlBase(iri) => {
 						let iri_ref = iri.borrow().map(IriRefBuf::as_iri_ref);
 						context.base_iri = Some(context.resolve_iri_ref(iri_ref)?);
@@ -210,7 +221,7 @@ where
 						context.insert_prefix(prefix.value().clone(), iri, meta.clone());
 					}
 				},
-				Meta(crate::Statement::Triples(t), meta) => {
+				(Statement::Triples(t), meta) => {
 					t.build(context, meta, triples)?;
 				}
 			}
@@ -233,7 +244,7 @@ impl<M: Clone> crate::Triples<M> {
 	{
 		let subject = self.subject.build(context, triples)?;
 
-		for Meta(po_list, _) in self.predicate_objects_list.iter() {
+		for (po_list, _) in self.predicate_objects_list.0.iter() {
 			po_list.build(context, meta, &subject, triples)?;
 		}
 
@@ -246,7 +257,7 @@ impl<M: Clone> crate::PredicateObjects<M> {
 		&self,
 		context: &mut Context<M, V, G>,
 		meta: &M,
-		subject: &Meta<Subject<V::Iri, V::BlankId>, M>,
+		subject: &(Subject<V::Iri, V::BlankId>, M),
 		triples: &mut Vec<MetaTriple<M, V>>,
 	) -> Result<(), MetaError<M>>
 	where
@@ -255,9 +266,9 @@ impl<M: Clone> crate::PredicateObjects<M> {
 	{
 		let predicate = self.verb.build(context, triples)?;
 
-		for o in &self.objects.value().0 {
+		for o in &self.objects.0 .0 {
 			let object = o.build(context, triples)?;
-			triples.push(Meta(
+			triples.push((
 				Triple(subject.clone(), predicate.clone(), object),
 				meta.clone(),
 			))
@@ -278,19 +289,16 @@ trait BuildFragment<M, V: RdfVocabulary + BlankIdVocabulary, G> {
 }
 
 impl<T: BuildMetaFragment<M, V, G>, M: Clone, V: RdfVocabulary + BlankIdVocabulary, G>
-	BuildFragment<M, V, G> for Meta<T, M>
+	BuildFragment<M, V, G> for (T, M)
 {
-	type Target = Meta<T::Target, M>;
+	type Target = (T::Target, M);
 
 	fn build(
 		&self,
 		context: &mut Context<M, V, G>,
 		triples: &mut Vec<MetaTriple<M, V>>,
 	) -> Result<Self::Target, MetaError<M>> {
-		Ok(Meta(
-			self.value().build(context, self.metadata(), triples)?,
-			self.metadata().clone(),
-		))
+		Ok((self.0.build(context, &self.1, triples)?, self.1.clone()))
 	}
 }
 
@@ -317,12 +325,10 @@ impl<M: Clone, V: RdfVocabulary + IriVocabularyMut + BlankIdVocabulary, G>
 		_triples: &mut Vec<MetaTriple<M, V>>,
 	) -> Result<Self::Target, MetaError<M>> {
 		match self {
-			Self::IriRef(iri_ref) => context.resolve_iri_ref(Meta(iri_ref.as_iri_ref(), meta)),
-			Self::Compact(prefix, suffix) => context.resolve_compact_iri(
-				prefix.borrow().map(String::as_str),
-				suffix.borrow().map(String::as_str),
-				meta,
-			),
+			Self::IriRef(iri_ref) => context.resolve_iri_ref((iri_ref.as_iri_ref(), meta)),
+			Self::PrefixedName(prefix, suffix) => {
+				context.resolve_compact_iri((&prefix.0, &prefix.1), (&suffix.0, &suffix.1), meta)
+			}
 		}
 	}
 }
@@ -344,9 +350,9 @@ where
 		match self {
 			Self::Label(b) => Ok(Subject::Blank(context.vocabulary.insert_blank_id(b))),
 			Self::Anonymous(b_property_list) => {
-				let b = Meta(context.generator.next(context.vocabulary), meta.clone());
+				let b = (context.generator.next(context.vocabulary), meta.clone());
 
-				for predicate_objects in b_property_list.iter() {
+				for (predicate_objects, meta) in b_property_list.0.iter() {
 					predicate_objects.build(context, meta, &b, triples)?;
 				}
 
@@ -377,7 +383,6 @@ where
 		}
 	}
 }
-
 impl<M: Clone, V: RdfVocabulary, G: Generator<V>> BuildMetaFragment<M, V, G>
 	for crate::Collection<M>
 where
@@ -399,11 +404,11 @@ where
 			let item = o.build(context, triples)?;
 			let node = context.generator.next(context.vocabulary);
 
-			triples.push(Meta(
+			triples.push((
 				Triple(
-					Meta(node.clone(), item.metadata().clone()),
-					Meta(context.vocabulary.insert(RDF_TYPE), item.metadata().clone()),
-					Meta(
+					(node.clone(), item.metadata().clone()),
+					(context.vocabulary.insert(RDF_TYPE), item.metadata().clone()),
+					(
 						Term::Id(Id::Iri(context.vocabulary.insert(RDF_LIST))),
 						item.metadata().clone(),
 					),
@@ -411,19 +416,19 @@ where
 				meta.clone(),
 			));
 
-			triples.push(Meta(
+			triples.push((
 				Triple(
-					Meta(node.clone(), item.metadata().clone()),
-					Meta(context.vocabulary.insert(RDF_REST), item.metadata().clone()),
-					Meta(head.into_term(), item.metadata().clone()),
+					(node.clone(), item.metadata().clone()),
+					(context.vocabulary.insert(RDF_REST), item.metadata().clone()),
+					(head.into_term(), item.metadata().clone()),
 				),
 				meta.clone(),
 			));
 
-			triples.push(Meta(
+			triples.push((
 				Triple(
-					Meta(node.clone(), item.metadata().clone()),
-					Meta(
+					(node.clone(), item.metadata().clone()),
+					(
 						context.vocabulary.insert(RDF_FIRST),
 						item.metadata().clone(),
 					),
@@ -516,13 +521,13 @@ where
 	) -> Result<Self::Target, MetaError<M>> {
 		let s = if *self { "true" } else { "false" };
 
-		Ok(crate::RdfLiteral::new(
-			Meta(s.to_owned(), meta.clone()),
-			Meta(
+		Ok(crate::RdfLiteral {
+			value: (s.to_owned(), meta.clone()),
+			type_: (
 				LiteralType::Any(context.vocabulary.insert(XSD_BOOLEAN)),
 				meta.clone(),
 			),
-		))
+		})
 	}
 }
 
@@ -545,8 +550,8 @@ where
 		};
 
 		Ok(crate::RdfLiteral::new(
-			Meta(s.to_owned(), meta.clone()),
-			Meta(
+			(s.to_owned(), meta.clone()),
+			(
 				LiteralType::Any(context.vocabulary.insert(ty)),
 				meta.clone(),
 			),
@@ -567,11 +572,11 @@ where
 		triples: &mut Vec<MetaTriple<M, V>>,
 	) -> Result<Self::Target, MetaError<M>> {
 		let type_ = match &self.type_ {
-			Meta(LiteralType::Any(t), meta) => Meta(
+			(LiteralType::Any(t), meta) => (
 				LiteralType::Any(t.build(context, meta, triples)?),
 				meta.clone(),
 			),
-			Meta(LiteralType::LangString(tag), meta) => Meta(
+			(LiteralType::LangString(tag), meta) => (
 				LiteralType::LangString(tag.build(context, meta, triples)?),
 				meta.clone(),
 			),

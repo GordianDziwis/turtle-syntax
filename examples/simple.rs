@@ -13,6 +13,7 @@ use rdf_types::vocabulary::{
 	LiteralVocabularyMut,
 };
 use rdf_types::{Dataset, Generator, Interpretation, Literal, Quad, Term, Triple, Vocabulary};
+use turtle_syntax::lexing::MetaTuple;
 use std::fs::File;
 use std::io::Read;
 use turtle_syntax::build::{strip, MetaTriple, RdfVocabulary};

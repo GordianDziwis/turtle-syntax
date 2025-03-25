@@ -13,10 +13,10 @@ pub trait Tokens {
 	type Error;
 
 	#[allow(clippy::type_complexity)]
-	fn peek(&mut self) -> Result<Meta<Option<&Token>, Span>, Meta<Self::Error, Span>>;
+	fn peek(&mut self) -> Result<(Option<&Token>, Span), Meta<Self::Error, Span>>;
 
 	#[allow(clippy::type_complexity)]
-	fn next(&mut self) -> Result<Meta<Option<Token>, Span>, Meta<Self::Error, Span>>;
+	fn next(&mut self) -> Result<(Option<Token>, Span), Meta<Self::Error, Span>>;
 
 	/// Returns the span of the last parsed token.
 	fn last(&self) -> Span;
@@ -237,7 +237,7 @@ impl Position {
 pub struct Lexer<C: Iterator<Item = Result<DecodedChar, E>>, E> {
 	chars: Peekable<C>,
 	pos: Position,
-	lookahead: Option<Meta<Token, Span>>,
+	lookahead: Option<(Token, Span)>,
 }
 
 impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
@@ -327,7 +327,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	/// Parses the rest of a lang tag, after the first `@` character.
 	fn next_langtag_or_keyword(
 		&mut self,
-	) -> Result<Meta<LanguageTagOrKeyword, Span>, Meta<Error<E>, Span>> {
+	) -> Result<(LanguageTagOrKeyword, Span), Meta<Error<E>, Span>> {
 		let mut tag = String::new();
 
 		loop {
@@ -388,19 +388,16 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 		}
 
 		match tag.as_str() {
-			"prefix" => Ok(Meta(
+			"prefix" => Ok((
 				LanguageTagOrKeyword::Keyword(Keyword::Prefix),
 				self.pos.current(),
 			)),
-			"base" => Ok(Meta(
+			"base" => Ok((
 				LanguageTagOrKeyword::Keyword(Keyword::Base),
 				self.pos.current(),
 			)),
 			_ => match LangTagBuf::new(tag) {
-				Ok(tag) => Ok(Meta(
-					LanguageTagOrKeyword::LanguageTag(tag),
-					self.pos.current(),
-				)),
+				Ok(tag) => Ok((LanguageTagOrKeyword::LanguageTag(tag), self.pos.current())),
 				Err(_) => Err(Meta(Error::InvalidLangTag, self.pos.current())),
 			},
 		}
@@ -408,7 +405,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 
 	/// Parses an IRI reference, starting after the first `<` until the closing
 	/// `>`.
-	fn next_iriref(&mut self) -> Result<Meta<IriRefBuf, Span>, Meta<Error<E>, Span>> {
+	fn next_iriref(&mut self) -> Result<(IriRefBuf, Span), Meta<Error<E>, Span>> {
 		let mut iriref = String::new();
 
 		loop {
@@ -449,7 +446,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 		}
 
 		match IriRefBuf::new(iriref) {
-			Ok(iriref) => Ok(Meta(iriref, self.pos.current())),
+			Ok(iriref) => Ok((iriref, self.pos.current())),
 			// NOTE Dropped string
 			Err(e) => Err(Meta(Error::InvalidIriRef(e), self.pos.current())),
 		}
@@ -484,7 +481,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	fn next_string_literal(
 		&mut self,
 		delimiter: char,
-	) -> Result<Meta<String, Span>, Meta<Error<E>, Span>> {
+	) -> Result<(String, Span), Meta<Error<E>, Span>> {
 		let mut string = String::new();
 
 		let mut long = false;
@@ -547,7 +544,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 			}
 		}
 
-		Ok(Meta(string, self.pos.current()))
+		Ok((string, self.pos.current()))
 	}
 
 	/// Parses an IRI reference, starting after the first `<` until the closing
@@ -555,7 +552,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	fn next_numeric_or_dot(
 		&mut self,
 		first: char,
-	) -> Result<Meta<NumericOrPeriod, Span>, Meta<Error<E>, Span>> {
+	) -> Result<(NumericOrPeriod, Span), Meta<Error<E>, Span>> {
 		let mut buffer: String = first.into();
 
 		enum State {
@@ -594,7 +591,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 				},
 				State::NonENonEmptyDecimal => match self.peek_char()? {
 					Some('0'..='9') => State::Decimal,
-					_ => return Ok(Meta(NumericOrPeriod::Period, self.pos.current())),
+					_ => return Ok((NumericOrPeriod::Period, self.pos.current())),
 				},
 				State::NonEmptyDecimal => match self.peek_char()? {
 					Some('0'..='9') => State::Decimal,
@@ -637,11 +634,11 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 			_ => unreachable!(),
 		};
 
-		Ok(Meta(NumericOrPeriod::Numeric(n), self.pos.current()))
+		Ok((NumericOrPeriod::Numeric(n), self.pos.current()))
 	}
 
 	/// Parses a blank node label, starting after the first `_`.
-	fn next_blank_node_label(&mut self) -> Result<Meta<BlankIdBuf, Span>, Meta<Error<E>, Span>> {
+	fn next_blank_node_label(&mut self) -> Result<(BlankIdBuf, Span), Meta<Error<E>, Span>> {
 		match self.next_char()? {
 			Some(':') => {
 				let mut label = String::new();
@@ -671,7 +668,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 							}
 						}
 
-						Ok(Meta(
+						Ok((
 							unsafe { BlankIdBuf::new_unchecked(label) },
 							self.pos.current(),
 						))
@@ -696,7 +693,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	fn next_name_or_keyword(
 		&mut self,
 		c: char,
-	) -> Result<Meta<NameOrKeyword, Span>, Meta<Error<E>, Span>> {
+	) -> Result<(NameOrKeyword, Span), Meta<Error<E>, Span>> {
 		// PNAME_NS or Keyword
 		let namespace = match c {
 			':' => (String::new(), self.pos.current()),
@@ -722,9 +719,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 						unexpected => {
 							return if unexpected.map(|c| c.is_whitespace()).unwrap_or(true) {
 								match Keyword::from_str(&namespace) {
-									Ok(kw) => {
-										Ok(Meta(NameOrKeyword::Keyword(kw), self.pos.current()))
-									}
+									Ok(kw) => Ok((NameOrKeyword::Keyword(kw), self.pos.current())),
 									Err(NotAKeyword) => break self.pos.current(),
 								}
 							} else {
@@ -786,7 +781,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 						_ => {
 							// NOTE set_end had a check
 							suffix_span.end = self.pos.current().end;
-							break Ok(Meta(
+							break Ok((
 								NameOrKeyword::CompactIri(namespace, (suffix, suffix_span)),
 								self.pos.current(),
 							));
@@ -794,14 +789,14 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 					}
 				}
 			}
-			_ => Ok(Meta(
+			_ => Ok((
 				NameOrKeyword::CompactIri(namespace, (String::new(), self.pos.current())),
 				self.pos.current(),
 			)),
 		}
 	}
 
-	pub fn consume(&mut self) -> Result<Meta<Option<Token>, Span>, Meta<Error<E>, Span>> {
+	pub fn consume(&mut self) -> Result<(Option<Token>, Span), Meta<Error<E>, Span>> {
 		self.skip_whitespaces()?;
 		match self.next_char()? {
 			Some('@') => Ok(self.next_langtag_or_keyword()?.map(|t| match t {
@@ -818,31 +813,19 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 			Some('_') => Ok(self
 				.next_blank_node_label()?
 				.map(|t| Some(Token::BlankNodeLabel(t)))),
-			Some(',') => Ok(Meta(Some(Token::Punct(Punct::Comma)), self.pos.current())),
-			Some(';') => Ok(Meta(
-				Some(Token::Punct(Punct::Semicolon)),
-				self.pos.current(),
-			)),
+			Some(',') => Ok((Some(Token::Punct(Punct::Comma)), self.pos.current())),
+			Some(';') => Ok((Some(Token::Punct(Punct::Semicolon)), self.pos.current())),
 			Some('^') => match self.next_char()? {
-				Some('^') => Ok(Meta(Some(Token::Punct(Punct::Carets)), self.pos.current())),
+				Some('^') => Ok((Some(Token::Punct(Punct::Carets)), self.pos.current())),
 				unexpected => Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last())),
 			},
-			Some('(') => Ok(Meta(
+			Some('(') => Ok((
 				Some(Token::Begin(Delimiter::Parenthesis)),
 				self.pos.current(),
 			)),
-			Some('[') => Ok(Meta(
-				Some(Token::Begin(Delimiter::Bracket)),
-				self.pos.current(),
-			)),
-			Some(')') => Ok(Meta(
-				Some(Token::End(Delimiter::Parenthesis)),
-				self.pos.current(),
-			)),
-			Some(']') => Ok(Meta(
-				Some(Token::End(Delimiter::Bracket)),
-				self.pos.current(),
-			)),
+			Some('[') => Ok((Some(Token::Begin(Delimiter::Bracket)), self.pos.current())),
+			Some(')') => Ok((Some(Token::End(Delimiter::Parenthesis)), self.pos.current())),
+			Some(']') => Ok((Some(Token::End(Delimiter::Bracket)), self.pos.current())),
 			Some(c @ ('+' | '-' | '0'..='9' | '.')) => {
 				Ok(self.next_numeric_or_dot(c)?.map(|t| match t {
 					NumericOrPeriod::Numeric(n) => Some(Token::Numeric(n)),
@@ -853,28 +836,28 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 				NameOrKeyword::Keyword(kw) => Some(Token::Keyword(kw)),
 				NameOrKeyword::CompactIri(p, s) => Some(Token::CompactIri(p, s)),
 			})),
-			None => Ok(Meta(None, self.pos.end())),
+			None => Ok((None, self.pos.end())),
 		}
 	}
 
 	#[allow(clippy::type_complexity)]
-	pub fn peek(&mut self) -> Result<Meta<Option<&Token>, Span>, Meta<Error<E>, Span>> {
+	pub fn peek(&mut self) -> Result<(Option<&Token>, Span), Meta<Error<E>, Span>> {
 		if self.lookahead.is_none() {
-			if let Meta(Some(token), loc) = self.consume()? {
-				self.lookahead = Some(Meta::new(token, loc));
+			if let (Some(token), loc) = self.consume()? {
+				self.lookahead = Some((token, loc));
 			}
 		}
 
 		match &self.lookahead {
-			Some(Meta(token, loc)) => Ok(Meta::new(Some(token), *loc)),
-			None => Ok(Meta::new(None, self.pos.end())),
+			Some((token, loc)) => Ok((Some(token), *loc)),
+			None => Ok((None, self.pos.end())),
 		}
 	}
 
 	#[allow(clippy::type_complexity, clippy::should_implement_trait)]
-	pub fn next(&mut self) -> Result<Meta<Option<Token>, Span>, Meta<Error<E>, Span>> {
+	pub fn next(&mut self) -> Result<(Option<Token>, Span), Meta<Error<E>, Span>> {
 		match self.lookahead.take() {
-			Some(Meta(token, loc)) => Ok(Meta::new(Some(token), loc)),
+			Some((token, loc)) => Ok((Some(token), loc)),
 			None => self.consume(),
 		}
 	}
@@ -883,11 +866,11 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 impl<E, C: Iterator<Item = Result<DecodedChar, E>>> Tokens for Lexer<C, E> {
 	type Error = Error<E>;
 
-	fn peek(&mut self) -> Result<Meta<Option<&Token>, Span>, Meta<Error<E>, Span>> {
+	fn peek(&mut self) -> Result<(Option<&Token>, Span), Meta<Error<E>, Span>> {
 		self.peek()
 	}
 
-	fn next(&mut self) -> Result<Meta<Option<Token>, Span>, Meta<Error<E>, Span>> {
+	fn next(&mut self) -> Result<(Option<Token>, Span), Meta<Error<E>, Span>> {
 		self.next()
 	}
 
@@ -901,8 +884,8 @@ impl<E, C: Iterator<Item = Result<DecodedChar, E>>> Iterator for Lexer<C, E> {
 
 	fn next(&mut self) -> Option<Self::Item> {
 		match self.next() {
-			Ok(Meta(Some(token), loc)) => Some(Ok(Meta::new(token, loc))),
-			Ok(Meta(None, _)) => None,
+			Ok((Some(token), loc)) => Some(Ok(Meta::new(token, loc))),
+			Ok((None, _)) => None,
 			Err(e) => Some(Err(e)),
 		}
 	}
@@ -919,4 +902,35 @@ fn is_pn_chars_u(c: char) -> bool {
 fn is_pn_chars(c: char) -> bool {
 	is_pn_chars_u(c)
 		|| matches!(c, '-' | '0'..='9' | '\u{00b7}' | '\u{0300}'..='\u{036f}' | '\u{203f}'..='\u{2040}')
+}
+
+pub trait MetaTuple<A, B> {
+	fn map<C, F>(self, f: F) -> (C, B)
+	where
+		F: FnOnce(A) -> C;
+
+	fn value(&self) -> &A;
+	fn metadata(&self) -> &B;
+	fn borrow(&self) -> (&A, &B);
+}
+
+impl<A, B> MetaTuple<A, B> for (A, B) {
+	fn map<C, F>(self, f: F) -> (C, B)
+	where
+		F: FnOnce(A) -> C,
+	{
+		(f(self.0), self.1)
+	}
+
+	fn value(&self) -> &A {
+		&self.0
+	}
+
+	fn metadata(&self) -> &B {
+		&self.1
+	}
+
+	fn borrow(&self) -> (&A, &B) {
+		(&self.0, &self.1)
+	}
 }
