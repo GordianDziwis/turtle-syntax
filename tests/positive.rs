@@ -1,5 +1,6 @@
 use nquads_syntax::Parse;
 use rdf_types::{LexicalTriple, RdfDisplay};
+use turtle_syntax::build::strip;
 use turtle_syntax::Parse as ParseNQuads;
 
 struct Test {
@@ -19,7 +20,7 @@ impl Test {
 			.build_triples(None, &mut generator)
 			.unwrap()
 			.into_iter()
-			.map(|t| t.strip())
+			.map(strip::<_, ()>)
 			.collect();
 
 		triples.sort();
@@ -32,9 +33,7 @@ impl Test {
 		.into_value()
 		.into_iter()
 		.map(|q| q.into_value().into_triple().0)
-		.map(|triple| {
-			LexicalTriple::new(triple.0.0, triple.1.0, triple.2.0)
-		})
+		.map(|triple| LexicalTriple::new(triple.0 .0, triple.1 .0, triple.2 .0))
 		.collect();
 		expected_triples.sort();
 

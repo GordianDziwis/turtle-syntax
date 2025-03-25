@@ -304,14 +304,6 @@ impl<T: fmt::Display, M> fmt::Display for Meta<T, M> {
 	}
 }
 
-// Note Delete?
-// #[cfg(feature = "contextual")]
-// impl<N, T: contextual::DisplayWithContext<N>, M> contextual::DisplayWithContext<N> for Meta<T, M> {
-// 	fn fmt_with(&self, context: &N, f: &mut fmt::Formatter) -> fmt::Result {
-// 		self.0.fmt_with(context, f)
-// 	}
-// }
-
 impl<T: 'static + std::error::Error, M: fmt::Debug> std::error::Error for Meta<T, M> {
 	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
 		Some(&self.0)

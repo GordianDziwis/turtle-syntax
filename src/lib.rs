@@ -71,7 +71,7 @@
 mod ast;
 pub mod build;
 pub mod lexing;
-mod meta;
+pub mod meta;
 pub mod parsing;
 
 pub use ast::*;
