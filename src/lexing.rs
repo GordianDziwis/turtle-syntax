@@ -1,4 +1,4 @@
-use crate::meta::Meta;
+use crate::meta::MetaTuple;
 use crate::{BlankIdBuf, DecimalBuf, DoubleBuf, IntegerBuf, NumericLiteral};
 use decoded_char::DecodedChar;
 use iref::IriRefBuf;
@@ -13,10 +13,10 @@ pub trait Tokens {
 	type Error;
 
 	#[allow(clippy::type_complexity)]
-	fn peek(&mut self) -> Result<(Option<&Token>, Span), Meta<Self::Error, Span>>;
+	fn peek(&mut self) -> Result<(Option<&Token>, Span), (Self::Error, Span)>;
 
 	#[allow(clippy::type_complexity)]
-	fn next(&mut self) -> Result<(Option<Token>, Span), Meta<Self::Error, Span>>;
+	fn next(&mut self) -> Result<(Option<Token>, Span), (Self::Error, Span)>;
 
 	/// Returns the span of the last parsed token.
 	fn last(&self) -> Span;
@@ -269,7 +269,7 @@ enum NumericOrPeriod {
 }
 
 impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
-	fn peek_char(&mut self) -> Result<Option<char>, Meta<Error<E>, Span>> {
+	fn peek_char(&mut self) -> Result<Option<char>, (Error<E>, Span)> {
 		match self.chars.peek() {
 			None => Ok(None),
 			Some(Ok(c)) => Ok(Some(c.chr())),
@@ -277,7 +277,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 		}
 	}
 
-	fn next_char(&mut self) -> Result<Option<char>, Meta<Error<E>, Span>> {
+	fn next_char(&mut self) -> Result<Option<char>, (Error<E>, Span)> {
 		match self.chars.next() {
 			None => Ok(None),
 			Some(Ok(c)) => {
@@ -286,16 +286,16 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 				self.pos.last_span.push(c.len());
 				Ok(Some(c.chr()))
 			}
-			Some(Err(e)) => Err(Meta(Error::Stream(e), self.pos.end())),
+			Some(Err(e)) => Err((Error::Stream(e), self.pos.end())),
 		}
 	}
 
-	fn expect_char(&mut self) -> Result<char, Meta<Error<E>, Span>> {
+	fn expect_char(&mut self) -> Result<char, (Error<E>, Span)> {
 		self.next_char()?
-			.ok_or_else(|| Meta(Error::Unexpected(Unexpected::EndOfFile), self.pos.end()))
+			.ok_or_else(|| (Error::Unexpected(Unexpected::EndOfFile), self.pos.end()))
 	}
 
-	fn skip_whitespaces(&mut self) -> Result<(), Meta<Error<E>, Span>> {
+	fn skip_whitespaces(&mut self) -> Result<(), (Error<E>, Span)> {
 		while let Some(c) = self.peek_char()? {
 			if c.is_whitespace() {
 				self.next_char()?;
@@ -316,7 +316,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	/// outside an IRIREF or STRING_LITERAL_QUOTE,
 	/// and continue to the end of line (EOL) or end of file
 	/// if there is no end of line after the comment marker.
-	fn next_comment(&mut self) -> Result<(), Meta<Error<E>, Span>> {
+	fn next_comment(&mut self) -> Result<(), (Error<E>, Span)> {
 		loop {
 			if matches!(self.next_char()?, None | Some('\n')) {
 				break Ok(());
@@ -327,14 +327,14 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	/// Parses the rest of a lang tag, after the first `@` character.
 	fn next_langtag_or_keyword(
 		&mut self,
-	) -> Result<(LanguageTagOrKeyword, Span), Meta<Error<E>, Span>> {
+	) -> Result<(LanguageTagOrKeyword, Span), (Error<E>, Span)> {
 		let mut tag = String::new();
 
 		loop {
 			match self.peek_char()? {
 				None => {
 					if tag.is_empty() {
-						return Err(Meta(Error::InvalidLangTag, self.pos.current()));
+						return Err((Error::InvalidLangTag, self.pos.current()));
 					} else {
 						break;
 					}
@@ -343,7 +343,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 					if c.is_ascii_alphabetic() {
 						tag.push(self.expect_char()?);
 					} else if tag.is_empty() {
-						return Err(Meta(Error::InvalidLangTag, self.pos.current()));
+						return Err((Error::InvalidLangTag, self.pos.current()));
 					} else {
 						break;
 					}
@@ -364,21 +364,18 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 					Some(c) => {
 						if c.is_whitespace() {
 							if empty_subtag {
-								return Err(Meta(Error::InvalidLangTag, self.pos.current()));
+								return Err((Error::InvalidLangTag, self.pos.current()));
 							} else {
 								break;
 							}
 						} else {
 							self.next_char()?;
-							return Err(Meta(
-								Error::Unexpected(Unexpected::Char(c)),
-								self.pos.last(),
-							));
+							return Err((Error::Unexpected(Unexpected::Char(c)), self.pos.last()));
 						}
 					}
 					None => {
 						if empty_subtag {
-							return Err(Meta(Error::InvalidLangTag, self.pos.current()));
+							return Err((Error::InvalidLangTag, self.pos.current()));
 						} else {
 							break;
 						}
@@ -398,14 +395,14 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 			)),
 			_ => match LangTagBuf::new(tag) {
 				Ok(tag) => Ok((LanguageTagOrKeyword::LanguageTag(tag), self.pos.current())),
-				Err(_) => Err(Meta(Error::InvalidLangTag, self.pos.current())),
+				Err(_) => Err((Error::InvalidLangTag, self.pos.current())),
 			},
 		}
 	}
 
 	/// Parses an IRI reference, starting after the first `<` until the closing
 	/// `>`.
-	fn next_iriref(&mut self) -> Result<(IriRefBuf, Span), Meta<Error<E>, Span>> {
+	fn next_iriref(&mut self) -> Result<(IriRefBuf, Span), (Error<E>, Span)> {
 		let mut iriref = String::new();
 
 		loop {
@@ -417,7 +414,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 						Some('u') => self.next_hex_char(span, 4)?,
 						Some('U') => self.next_hex_char(span, 8)?,
 						unexpected => {
-							return Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last()))
+							return Err((Error::Unexpected(unexpected.into()), self.pos.last()))
 						}
 					};
 
@@ -428,43 +425,30 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 						c,
 						'\u{00}'..='\u{20}' | '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\'
 					) {
-						return Err(Meta(
-							Error::Unexpected(Unexpected::Char(c)),
-							self.pos.last(),
-						));
+						return Err((Error::Unexpected(Unexpected::Char(c)), self.pos.last()));
 					}
 
 					iriref.push(c)
 				}
-				None => {
-					return Err(Meta(
-						Error::Unexpected(Unexpected::EndOfFile),
-						self.pos.end(),
-					))
-				}
+				None => return Err((Error::Unexpected(Unexpected::EndOfFile), self.pos.end())),
 			}
 		}
 
 		match IriRefBuf::new(iriref) {
 			Ok(iriref) => Ok((iriref, self.pos.current())),
 			// NOTE Dropped string
-			Err(e) => Err(Meta(Error::InvalidIriRef(e), self.pos.current())),
+			Err(e) => Err((Error::InvalidIriRef(e), self.pos.current())),
 		}
 	}
 
-	fn next_hex_char(&mut self, mut span: Span, len: u8) -> Result<char, Meta<Error<E>, Span>> {
+	fn next_hex_char(&mut self, mut span: Span, len: u8) -> Result<char, (Error<E>, Span)> {
 		let mut codepoint = 0;
 
 		for _ in 0..len {
 			let c = self.expect_char()?;
 			match c.to_digit(16) {
 				Some(d) => codepoint = (codepoint << 4) | d,
-				None => {
-					return Err(Meta(
-						Error::Unexpected(Unexpected::Char(c)),
-						self.pos.last(),
-					))
-				}
+				None => return Err((Error::Unexpected(Unexpected::Char(c)), self.pos.last())),
 			}
 		}
 
@@ -472,16 +456,13 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 		span.end = self.pos.current().end;
 		match char::try_from(codepoint) {
 			Ok(c) => Ok(c),
-			Err(_) => Err(Meta(Error::InvalidCodepoint(codepoint), span)),
+			Err(_) => Err((Error::InvalidCodepoint(codepoint), span)),
 		}
 	}
 
 	/// Parses a string literal, starting after the first `"` until the closing
 	/// `"`.
-	fn next_string_literal(
-		&mut self,
-		delimiter: char,
-	) -> Result<(String, Span), Meta<Error<E>, Span>> {
+	fn next_string_literal(&mut self, delimiter: char) -> Result<(String, Span), (Error<E>, Span)> {
 		let mut string = String::new();
 
 		let mut long = false;
@@ -523,7 +504,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 						Some('"') => '"',
 						Some('\\') => '\\',
 						unexpected => {
-							return Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last()))
+							return Err((Error::Unexpected(unexpected.into()), self.pos.last()))
 						}
 					};
 
@@ -531,16 +512,11 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 				}
 				Some(c) => {
 					// if !long && matches!(c, '\n' | '\r') {
-					// 	return Err(Meta(Error::Unexpected(Unexpected::Char(c)), self.pos.last()));
+					// 	return Err((Error::Unexpected(Unexpected::Char(c)), self.pos.last()));
 					// }
 					string.push(c)
 				}
-				None => {
-					return Err(Meta(
-						Error::Unexpected(Unexpected::EndOfFile),
-						self.pos.end(),
-					))
-				}
+				None => return Err((Error::Unexpected(Unexpected::EndOfFile), self.pos.end())),
 			}
 		}
 
@@ -552,7 +528,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	fn next_numeric_or_dot(
 		&mut self,
 		first: char,
-	) -> Result<(NumericOrPeriod, Span), Meta<Error<E>, Span>> {
+	) -> Result<(NumericOrPeriod, Span), (Error<E>, Span)> {
 		let mut buffer: String = first.into();
 
 		enum State {
@@ -580,7 +556,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 					Some('0'..='9') => State::Integer,
 					Some('.') => State::NonEmptyDecimal,
 					unexpected => {
-						return Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last()))
+						return Err((Error::Unexpected(unexpected.into()), self.pos.last()))
 					}
 				},
 				State::Integer => match self.peek_char()? {
@@ -597,7 +573,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 					Some('0'..='9') => State::Decimal,
 					Some('e' | 'E') => State::ExponentSign,
 					unexpected => {
-						return Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last()))
+						return Err((Error::Unexpected(unexpected.into()), self.pos.last()))
 					}
 				},
 				State::Decimal => match self.peek_char()? {
@@ -609,13 +585,13 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 					Some('+' | '-') => State::NonEmptyExponent,
 					Some('0'..='9') => State::Exponent,
 					unexpected => {
-						return Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last()))
+						return Err((Error::Unexpected(unexpected.into()), self.pos.last()))
 					}
 				},
 				State::NonEmptyExponent => match self.peek_char()? {
 					Some('0'..='9') => State::Exponent,
 					unexpected => {
-						return Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last()))
+						return Err((Error::Unexpected(unexpected.into()), self.pos.last()))
 					}
 				},
 				State::Exponent => match self.peek_char()? {
@@ -638,7 +614,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	}
 
 	/// Parses a blank node label, starting after the first `_`.
-	fn next_blank_node_label(&mut self) -> Result<(BlankIdBuf, Span), Meta<Error<E>, Span>> {
+	fn next_blank_node_label(&mut self) -> Result<(BlankIdBuf, Span), (Error<E>, Span)> {
 		match self.next_char()? {
 			Some(':') => {
 				let mut label = String::new();
@@ -660,7 +636,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 								}
 								_ if last_is_pn_chars => break,
 								unexpected => {
-									return Err(Meta(
+									return Err((
 										Error::Unexpected(unexpected.into()),
 										self.pos.last(),
 									))
@@ -673,27 +649,24 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 							self.pos.current(),
 						))
 					}
-					unexpected => Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last())),
+					unexpected => Err((Error::Unexpected(unexpected.into()), self.pos.last())),
 				}
 			}
-			unexpected => Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last())),
+			unexpected => Err((Error::Unexpected(unexpected.into()), self.pos.last())),
 		}
 	}
 
-	fn next_escape(&mut self) -> Result<char, Meta<Error<E>, Span>> {
+	fn next_escape(&mut self) -> Result<char, (Error<E>, Span)> {
 		match self.next_char()? {
 			Some(
 				c @ ('_' | '~' | '.' | '-' | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ','
 				| ';' | '=' | '/' | '?' | '#' | '@' | '%'),
 			) => Ok(c),
-			unexpected => Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last())),
+			unexpected => Err((Error::Unexpected(unexpected.into()), self.pos.last())),
 		}
 	}
 
-	fn next_name_or_keyword(
-		&mut self,
-		c: char,
-	) -> Result<(NameOrKeyword, Span), Meta<Error<E>, Span>> {
+	fn next_name_or_keyword(&mut self, c: char) -> Result<(NameOrKeyword, Span), (Error<E>, Span)> {
 		// PNAME_NS or Keyword
 		let namespace = match c {
 			':' => (String::new(), self.pos.current()),
@@ -723,7 +696,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 									Err(NotAKeyword) => break self.pos.current(),
 								}
 							} else {
-								Err(Meta(Error::Unexpected(unexpected.into()), self.pos.end()))
+								Err((Error::Unexpected(unexpected.into()), self.pos.end()))
 							}
 						}
 					}
@@ -732,7 +705,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 				(namespace, span)
 			}
 			unexpected => {
-				return Err(Meta(
+				return Err((
 					Error::Unexpected(Unexpected::Char(unexpected)),
 					self.pos.last(),
 				))
@@ -796,7 +769,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 		}
 	}
 
-	pub fn consume(&mut self) -> Result<(Option<Token>, Span), Meta<Error<E>, Span>> {
+	pub fn consume(&mut self) -> Result<(Option<Token>, Span), (Error<E>, Span)> {
 		self.skip_whitespaces()?;
 		match self.next_char()? {
 			Some('@') => Ok(self.next_langtag_or_keyword()?.map(|t| match t {
@@ -817,7 +790,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 			Some(';') => Ok((Some(Token::Punct(Punct::Semicolon)), self.pos.current())),
 			Some('^') => match self.next_char()? {
 				Some('^') => Ok((Some(Token::Punct(Punct::Carets)), self.pos.current())),
-				unexpected => Err(Meta(Error::Unexpected(unexpected.into()), self.pos.last())),
+				unexpected => Err((Error::Unexpected(unexpected.into()), self.pos.last())),
 			},
 			Some('(') => Ok((
 				Some(Token::Begin(Delimiter::Parenthesis)),
@@ -841,7 +814,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	}
 
 	#[allow(clippy::type_complexity)]
-	pub fn peek(&mut self) -> Result<(Option<&Token>, Span), Meta<Error<E>, Span>> {
+	pub fn peek(&mut self) -> Result<(Option<&Token>, Span), (Error<E>, Span)> {
 		if self.lookahead.is_none() {
 			if let (Some(token), loc) = self.consume()? {
 				self.lookahead = Some((token, loc));
@@ -855,7 +828,7 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 	}
 
 	#[allow(clippy::type_complexity, clippy::should_implement_trait)]
-	pub fn next(&mut self) -> Result<(Option<Token>, Span), Meta<Error<E>, Span>> {
+	pub fn next(&mut self) -> Result<(Option<Token>, Span), (Error<E>, Span)> {
 		match self.lookahead.take() {
 			Some((token, loc)) => Ok((Some(token), loc)),
 			None => self.consume(),
@@ -866,11 +839,11 @@ impl<C: Iterator<Item = Result<DecodedChar, E>>, E> Lexer<C, E> {
 impl<E, C: Iterator<Item = Result<DecodedChar, E>>> Tokens for Lexer<C, E> {
 	type Error = Error<E>;
 
-	fn peek(&mut self) -> Result<(Option<&Token>, Span), Meta<Error<E>, Span>> {
+	fn peek(&mut self) -> Result<(Option<&Token>, Span), (Error<E>, Span)> {
 		self.peek()
 	}
 
-	fn next(&mut self) -> Result<(Option<Token>, Span), Meta<Error<E>, Span>> {
+	fn next(&mut self) -> Result<(Option<Token>, Span), (Error<E>, Span)> {
 		self.next()
 	}
 
@@ -880,11 +853,11 @@ impl<E, C: Iterator<Item = Result<DecodedChar, E>>> Tokens for Lexer<C, E> {
 }
 
 impl<E, C: Iterator<Item = Result<DecodedChar, E>>> Iterator for Lexer<C, E> {
-	type Item = Result<Meta<Token, Span>, Meta<Error<E>, Span>>;
+	type Item = Result<(Token, Span), (Error<E>, Span)>;
 
 	fn next(&mut self) -> Option<Self::Item> {
 		match self.next() {
-			Ok((Some(token), loc)) => Some(Ok(Meta::new(token, loc))),
+			Ok((Some(token), loc)) => Some(Ok((token, loc))),
 			Ok((None, _)) => None,
 			Err(e) => Some(Err(e)),
 		}
@@ -902,35 +875,4 @@ fn is_pn_chars_u(c: char) -> bool {
 fn is_pn_chars(c: char) -> bool {
 	is_pn_chars_u(c)
 		|| matches!(c, '-' | '0'..='9' | '\u{00b7}' | '\u{0300}'..='\u{036f}' | '\u{203f}'..='\u{2040}')
-}
-
-pub trait MetaTuple<A, B> {
-	fn map<C, F>(self, f: F) -> (C, B)
-	where
-		F: FnOnce(A) -> C;
-
-	fn value(&self) -> &A;
-	fn metadata(&self) -> &B;
-	fn borrow(&self) -> (&A, &B);
-}
-
-impl<A, B> MetaTuple<A, B> for (A, B) {
-	fn map<C, F>(self, f: F) -> (C, B)
-	where
-		F: FnOnce(A) -> C,
-	{
-		(f(self.0), self.1)
-	}
-
-	fn value(&self) -> &A {
-		&self.0
-	}
-
-	fn metadata(&self) -> &B {
-		&self.1
-	}
-
-	fn borrow(&self) -> (&A, &B) {
-		(&self.0, &self.1)
-	}
 }

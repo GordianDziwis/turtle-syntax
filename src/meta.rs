@@ -1,357 +1,180 @@
-use std::borrow::{Borrow, BorrowMut};
-use std::fmt;
-use std::ops::{Deref, DerefMut};
+use rdf_types::dataset::DatasetMut;
+use rdf_types::interpretation::{
+	BlankIdInterpretationMut, Interpret, IriInterpretationMut, LiteralInterpretationMut,
+};
+use rdf_types::vocabulary::{
+	BlankIdVocabulary, BlankIdVocabularyMut, IriVocabulary, IriVocabularyMut, LiteralVocabularyMut,
+};
+use rdf_types::{Generator, Id, Literal, Quad, Term, Triple};
 
-/// Data and its metadata.
-///
-/// This is a simple wrapper around data that also embeds data of type `M`.
-///
-/// It is a tuple struct so it can be easily deconstructed using pattern matching.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
-pub struct Meta<T, M = ()>(pub T, pub M);
+use crate::build::{BuildError, MetaTriple};
+use crate::parsing::{Parse, ParseError};
+use crate::Document;
 
-impl<T, M> Meta<T, M> {
-	/// Creates a new value attached to its metadata.
-	#[inline(always)]
-	pub fn new(t: T, metadata: M) -> Self {
-		Self(t, metadata)
+#[derive(Debug, thiserror::Error)]
+pub enum Error<E, M> {
+	#[error(transparent)]
+	Parse(ParseError<E, M>),
+
+	#[error(transparent)]
+	Builder(BuildError<E>),
+}
+
+pub trait MetaTuple<A, B> {
+	fn map<C, F>(self, f: F) -> (C, B)
+	where
+		F: FnOnce(A) -> C;
+
+	fn value(&self) -> &A;
+
+	fn into_value(self) -> A;
+
+	fn metadata(&self) -> &B;
+
+	fn borrow(&self) -> (&A, &B);
+}
+
+impl<A, B> MetaTuple<A, B> for (A, B) {
+	fn map<C, F>(self, f: F) -> (C, B)
+	where
+		F: FnOnce(A) -> C,
+	{
+		(f(self.0), self.1)
 	}
 
-	/// Unwraps the value and discard its metadata.
-	#[inline(always)]
-	pub fn into_value(self) -> T {
-		self.0
-	}
-
-	/// Discards the value and returns its metadata.
-	#[inline(always)]
-	pub fn into_metadata(self) -> M {
-		self.1
-	}
-
-	/// Returns a reference to the wrapped value.
-	#[inline(always)]
-	pub fn value(&self) -> &T {
+	fn value(&self) -> &A {
 		&self.0
 	}
 
-	/// Returns a mutable reference to the wrapped value.
-	#[inline(always)]
-	pub fn value_mut(&mut self) -> &mut T {
-		&mut self.0
+	fn into_value(self) -> A {
+		self.0
 	}
 
-	/// Returns a reference to the value's metadata.
-	#[inline(always)]
-	pub fn metadata(&self) -> &M {
+	fn metadata(&self) -> &B {
 		&self.1
 	}
 
-	/// Returns a mutable reference to the value's metadata.
-	#[inline(always)]
-	pub fn metadata_mut(&mut self) -> &mut M {
-		&mut self.1
-	}
-
-	/// Maps the inner value.
-	#[inline(always)]
-	pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Meta<U, M> {
-		Meta(f(self.0), self.1)
-	}
-
-	/// Converts the inner value.
-	#[inline(always)]
-	pub fn cast<U>(self) -> Meta<U, M>
-	where
-		U: From<T>,
-	{
-		Meta(self.0.into(), self.1)
-	}
-
-	/// Tries to map the inner value.
-	#[inline(always)]
-	pub fn try_map<U, E>(self, f: impl FnOnce(T) -> Result<U, E>) -> Result<Meta<U, M>, E> {
-		Ok(Meta(f(self.0)?, self.1))
-	}
-
-	/// Tries to convert the inner value.
-	#[inline(always)]
-	pub fn try_cast<U>(self) -> Result<Meta<U, M>, U::Error>
-	where
-		U: TryFrom<T>,
-	{
-		Ok(Meta(self.0.try_into()?, self.1))
-	}
-
-	/// Maps the metadata.
-	#[inline(always)]
-	pub fn map_metadata<N>(self, f: impl FnOnce(M) -> N) -> Meta<T, N> {
-		Meta(self.0, f(self.1))
-	}
-
-	/// Maps the metadata of a recursive data structure.
-	#[inline(always)]
-	pub fn map_metadata_recursively<N, F: FnMut(M) -> N>(self, mut f: F) -> Meta<T::Output, N>
-	where
-		T: MapMetadataRecursively<M, N>,
-	{
-		let meta = f(self.1);
-		Meta(self.0.map_metadata_recursively(f), meta)
-	}
-
-	/// Tries to maps the metadata.
-	#[inline(always)]
-	pub fn try_map_metadata<N, E>(
-		self,
-		f: impl FnOnce(M) -> Result<N, E>,
-	) -> Result<Meta<T, N>, E> {
-		Ok(Meta(self.0, f(self.1)?))
-	}
-
-	/// Tries to map the metadata of a recursive data structure.
-	#[inline(always)]
-	pub fn try_map_metadata_recursively<N, E, F: FnMut(M) -> Result<N, E>>(
-		self,
-		mut f: F,
-	) -> Result<Meta<T::Output, N>, E>
-	where
-		T: TryMapMetadataRecursively<M, N, E>,
-	{
-		let meta = f(self.1)?;
-		Ok(Meta(self.0.try_map_metadata_recursively(f)?, meta))
-	}
-
-	/// Cast the metadata.
-	#[inline(always)]
-	pub fn cast_metadata<N>(self) -> Meta<T, N>
-	where
-		M: Into<N>,
-	{
-		Meta(self.0, self.1.into())
-	}
-
-	/// Casts the metadata of a recursive data structure.
-	#[inline(always)]
-	pub fn cast_metadata_recursively<N>(self) -> Meta<T::Output, N>
-	where
-		T: MapMetadataRecursively<M, N>,
-		M: Into<N>,
-	{
-		self.map_metadata_recursively(M::into)
-	}
-
-	/// Tries to cast the metadata.
-	#[inline(always)]
-	pub fn try_cast_metadata<N>(self) -> Result<Meta<T, N>, M::Error>
-	where
-		M: TryInto<N>,
-	{
-		Ok(Meta(self.0, self.1.try_into()?))
-	}
-
-	/// Tries to cast the metadata of a recursive data structure.
-	#[inline(always)]
-	pub fn try_cast_metadata_recursively<N>(self) -> Result<Meta<T::Output, N>, M::Error>
-	where
-		T: TryMapMetadataRecursively<M, N, M::Error>,
-		M: TryInto<N>,
-	{
-		self.try_map_metadata_recursively(M::try_into)
-	}
-
-	/// Borrows the value and its metadata.
-	#[inline(always)]
-	pub fn borrow(&self) -> Meta<&T, &M> {
-		Meta(&self.0, &self.1)
-	}
-
-	/// Borrows the value and clones the metadata.
-	#[inline(always)]
-	pub fn borrow_value(&self) -> Meta<&T, M>
-	where
-		M: Clone,
-	{
-		Meta(&self.0, self.1.clone())
-	}
-
-	/// Borrows the file and clones the value.
-	#[inline(always)]
-	pub fn borrow_metadata(&self) -> Meta<T, &M>
-	where
-		T: Clone,
-	{
-		Meta(self.0.clone(), &self.1)
+	fn borrow(&self) -> (&A, &B) {
+		(&self.0, &self.1)
 	}
 }
 
-impl<T> Meta<T> {
-	/// Creates a value without metadata.
-	pub fn none(value: T) -> Self {
-		Self(value, ())
-	}
-}
+pub type RdfTriple<V> = Triple<RdfId<V>, <V as IriVocabulary>::Iri, RdfTerm<V>>;
 
-impl<T, M> From<T> for Meta<T, M>
+pub type RdfId<V> = Id<<V as IriVocabulary>::Iri, <V as BlankIdVocabulary>::BlankId>;
+
+pub type RdfTerm<V> = Term<RdfId<V>, Literal<<V as IriVocabulary>::Iri>>;
+
+pub fn strip<M, V>(triple: MetaTriple<M, V>) -> RdfTriple<V>
 where
-	M: Default,
+	V: IriVocabularyMut + BlankIdVocabularyMut,
 {
-	fn from(t: T) -> Self {
-		Self(t, M::default())
-	}
+	let Triple((s, _), (p, _), (o, _)) = triple.into_value();
+	let o = match o {
+		Term::Id(id) => Term::Id(id),
+		Term::Literal(literal) => Term::Literal(literal.into()),
+	};
+	Triple(s, p, o)
 }
 
-impl<T: Clone, M: Clone> Meta<&T, &M> {
-	pub fn cloned(&self) -> Meta<T, M> {
-		Meta(self.0.clone(), self.1.clone())
-	}
-}
-
-impl<T: Clone, M> Meta<&T, M> {
-	/// Clones the borrowed value and the file to return a new `Meta<T, F>`.
-	#[inline(always)]
-	pub fn cloned_value(&self) -> Meta<T, M>
+pub trait FromTurtle {
+	fn from_turtle_with<I, V>(
+		turtle: &str,
+		interpretation: &mut I,
+		vocabulary: &mut V,
+		generator: impl Generator<V>,
+	) -> Self
 	where
-		M: Clone,
+		I: IriInterpretationMut<<V as IriVocabulary>::Iri>
+			+ BlankIdInterpretationMut<<V as BlankIdVocabulary>::BlankId>
+			+ LiteralInterpretationMut<Literal<<V as IriVocabulary>::Iri>>,
+		V: IriVocabularyMut + BlankIdVocabularyMut + LiteralVocabularyMut,
+		V::Iri: Clone,
+		V::BlankId: Clone,
+		Self: FromIterator<Quad<I::Resource>>,
 	{
-		Meta(self.0.clone(), self.1.clone())
+		let quads = to_triples_with(turtle, vocabulary, interpretation, generator)
+			.into_iter()
+			.map(|triple| triple.into_quad(None));
+		Self::from_iter(quads)
 	}
 
-	/// Clones the borrowed value and consume the file to return a new `Loc<T, F>`.
-	#[inline(always)]
-	pub fn into_cloned_value(self) -> Meta<T, M> {
-		Meta(self.0.clone(), self.1)
-	}
-}
-
-impl<T, M: Clone> Meta<T, &M> {
-	#[inline(always)]
-	pub fn cloned_metadata(&self) -> Meta<T, M>
+	fn from_turtle(turtle: &str, generator: impl Generator<()>) -> Self
 	where
-		T: Clone,
+		Self: FromIterator<Quad>,
 	{
-		Meta(self.0.clone(), self.1.clone())
-	}
-
-	#[inline(always)]
-	pub fn into_cloned_metadata(self) -> Meta<T, M> {
-		Meta(self.0, self.1.clone())
+		let quads = to_triples(turtle, generator)
+			.into_iter()
+			.map(|triple| triple.into_quad(None));
+		Self::from_iter(quads)
 	}
 }
 
-impl<T, M> Meta<Option<T>, M> {
-	/// Unwraps the inner `Option`.
-	#[inline(always)]
-	pub fn unwrap(self) -> Meta<T, M> {
-		self.map(Option::unwrap)
+impl<T: DatasetMut> FromTurtle for T {}
+
+pub trait InsertTurtle {
+	fn insert_turtle_with<I, V>(
+		&mut self,
+		turtle: &str,
+		interpretation: &mut I,
+		vocabulary: &mut V,
+		generator: impl Generator<V>,
+	) where
+		Self: DatasetMut<Resource = I::Resource>,
+		I: IriInterpretationMut<<V as IriVocabulary>::Iri>
+			+ BlankIdInterpretationMut<<V as BlankIdVocabulary>::BlankId>
+			+ LiteralInterpretationMut<Literal<<V as IriVocabulary>::Iri>>,
+		V: IriVocabularyMut + BlankIdVocabularyMut + LiteralVocabularyMut,
+		V::Iri: Clone,
+		V::BlankId: Clone,
+	{
+		to_triples_with(turtle, vocabulary, interpretation, generator)
+			.into_iter()
+			.map(|triple| triple.into_quad(None))
+			.for_each(|quad| self.insert(quad));
 	}
 
-	#[inline(always)]
-	pub fn transpose(self) -> Option<Meta<T, M>> {
-		match self.0 {
-			Some(t) => Some(Meta(t, self.1)),
-			None => None,
-		}
-	}
-}
-
-impl<T, M> Deref for Meta<T, M> {
-	type Target = T;
-
-	#[inline(always)]
-	fn deref(&self) -> &T {
-		self.value()
-	}
-}
-
-impl<T, M> DerefMut for Meta<T, M> {
-	#[inline(always)]
-	fn deref_mut(&mut self) -> &mut T {
-		self.value_mut()
-	}
-}
-
-impl<T, M> AsRef<T> for Meta<T, M> {
-	#[inline(always)]
-	fn as_ref(&self) -> &T {
-		self.value()
+	fn insert_turtle(&mut self, turtle: &str, generator: impl Generator<()>)
+	where
+		Self: DatasetMut<Resource = Term>,
+	{
+		self.insert_turtle_with::<(), ()>(turtle, &mut (), &mut (), generator)
 	}
 }
 
-impl<T, M> AsMut<T> for Meta<T, M> {
-	#[inline(always)]
-	fn as_mut(&mut self) -> &mut T {
-		self.value_mut()
-	}
-}
+impl<T: DatasetMut> InsertTurtle for T {}
 
-impl<T, M> Borrow<T> for Meta<T, M> {
-	#[inline(always)]
-	fn borrow(&self) -> &T {
-		self.value()
-	}
-}
-
-impl<T, M> BorrowMut<T> for Meta<T, M> {
-	#[inline(always)]
-	fn borrow_mut(&mut self) -> &mut T {
-		self.value_mut()
-	}
-}
-
-impl<T: fmt::Display, M> fmt::Display for Meta<T, M> {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		self.0.fmt(f)
-	}
-}
-
-impl<T: 'static + std::error::Error, M: fmt::Debug> std::error::Error for Meta<T, M> {
-	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-		Some(&self.0)
-	}
-}
-
-/// Provides a function to map the metadata inside a recursive data structure.
-pub trait MapMetadataRecursively<M, N> {
-	type Output;
-
-	/// Maps the metadata, recursively.
-	fn map_metadata_recursively<F: FnMut(M) -> N>(self, f: F) -> Self::Output;
-}
-
-impl<T, M, N> MapMetadataRecursively<M, N> for Meta<T, M>
+pub fn to_triples_with<I, V>(
+	turtle: &str,
+	vocabulary: &mut V,
+	interpretation: &mut I,
+	generator: impl Generator<V>,
+) -> Vec<Triple<I::Resource>>
 where
-	T: MapMetadataRecursively<M, N>,
+	I: IriInterpretationMut<<V as IriVocabulary>::Iri>
+		+ BlankIdInterpretationMut<<V as BlankIdVocabulary>::BlankId>
+		+ LiteralInterpretationMut<Literal<<V as IriVocabulary>::Iri>>,
+	V: IriVocabularyMut + BlankIdVocabularyMut,
+	V::Iri: Clone,
+	V::BlankId: Clone,
 {
-	type Output = Meta<T::Output, N>;
-
-	#[inline(always)]
-	fn map_metadata_recursively<F: FnMut(M) -> N>(self, f: F) -> Self::Output {
-		self.map_metadata_recursively(f)
-	}
+	Document::parse_str(turtle, |span| span)
+		.unwrap()
+		.value()
+		.build_meta_triples_with(None, vocabulary, generator)
+		.unwrap()
+		.into_iter()
+		.map(|triple| strip::<_, V>(triple))
+		.map(|t| {
+			Triple(
+				t.0.interpret(interpretation),
+				interpretation.interpret_iri(t.1),
+				t.2.interpret(interpretation),
+			)
+		})
+		.collect()
 }
 
-/// Provides a function that tries to map the metadata inside a recursive data structure.
-pub trait TryMapMetadataRecursively<M, N, E> {
-	type Output;
-
-	/// Tries to map the metadata, recursively.
-	fn try_map_metadata_recursively<F: FnMut(M) -> Result<N, E>>(
-		self,
-		f: F,
-	) -> Result<Self::Output, E>;
-}
-
-impl<T, M, N, E> TryMapMetadataRecursively<M, N, E> for Meta<T, M>
-where
-	T: TryMapMetadataRecursively<M, N, E>,
-{
-	type Output = Meta<T::Output, N>;
-
-	#[inline(always)]
-	fn try_map_metadata_recursively<F: FnMut(M) -> Result<N, E>>(
-		self,
-		f: F,
-	) -> Result<Self::Output, E> {
-		self.try_map_metadata_recursively(f)
-	}
+pub fn to_triples(turtle: &str, generator: impl Generator<()>) -> Vec<Triple> {
+	to_triples_with::<(), ()>(turtle, &mut (), &mut (), generator)
 }

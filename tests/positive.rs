@@ -1,7 +1,6 @@
 use nquads_syntax::Parse;
 use rdf_types::{LexicalTriple, RdfDisplay};
-use turtle_syntax::build::strip;
-use turtle_syntax::lexing::MetaTuple;
+use turtle_syntax::meta::{strip, MetaTuple};
 use turtle_syntax::Parse as ParseNQuads;
 
 struct Test {
@@ -19,7 +18,7 @@ impl Test {
 		let mut generator = rdf_types::generator::Blank::new();
 		let mut triples: Vec<_> = ast
 			.value()
-			.build_triples(None, &mut generator)
+			.build_meta_triples(None, &mut generator)
 			.unwrap()
 			.into_iter()
 			.map(strip::<_, ()>)
